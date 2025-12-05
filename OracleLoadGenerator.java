@@ -227,6 +227,7 @@ public class OracleLoadGenerator {
                 
                 System.out.println("\n=== Scheduled Metrics Burst ===");
                 
+                // Existing metrics
                 executorService.submit(this::generateTablespacePressure);
                 executorService.submit(this::generateTempSpaceUsage);
                 executorService.submit(this::generateUndoSegmentContention);
@@ -237,6 +238,16 @@ public class OracleLoadGenerator {
                 executorService.submit(this::generateParseActivity);
                 executorService.submit(this::generateSQLNetActivity);
                 executorService.submit(this::generateIndexContention);
+                
+                // Enhanced wait events and blocking sessions
+                executorService.submit(this::generateEnqueueContentionBurst);
+                executorService.submit(this::generateRowLevelLocking);
+                executorService.submit(this::generateBufferCacheContention);
+                executorService.submit(this::generateSequenceContention);
+                executorService.submit(this::generateDBFileSyncWaits);
+                executorService.submit(this::generateControlFileWaits);
+                executorService.submit(this::generateLibraryCachePinWaits);
+                executorService.submit(this::generateRowCacheLockWaits);
                 
                 System.out.println("=== Metrics burst triggered ===\n");
                 
@@ -252,8 +263,10 @@ public class OracleLoadGenerator {
     
     private void generateTablespacePressure() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
             stmt.executeUpdate(
                 "INSERT INTO LOAD_TEST_ORDERS " +
+                "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                 "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000), MOD(LEVEL, 500), " +
                 "SYSDATE, 999.99, 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Tablespace pressure test', 3500, 'X') " +
@@ -323,8 +336,10 @@ public class OracleLoadGenerator {
     
     private void generateCheckpointActivity() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
             stmt.executeUpdate(
                 "INSERT INTO LOAD_TEST_ORDERS " +
+                "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                 "SELECT load_test_order_seq.NEXTVAL, LEVEL, LEVEL, SYSDATE, " +
                 "DBMS_RANDOM.VALUE(1, 1000), 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Checkpoint test', 2000, 'Y') " +
@@ -344,9 +359,11 @@ public class OracleLoadGenerator {
     
     private void generateArchiveLogActivity() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
             for (int batch = 0; batch < 5; batch++) {
                 stmt.executeUpdate(
                     "INSERT INTO LOAD_TEST_ORDERS " +
+                    "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                     "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 500), MOD(LEVEL, 250), " +
                     "SYSDATE, 100, 'PENDING', 'Region0', 'Rep1', " +
                     "RPAD('Archive log generation', 1500, 'Z') " +
@@ -715,6 +732,186 @@ public class OracleLoadGenerator {
                     System.err.println("Sequential read error: " + e.getMessage());
                 }
             }
+        }
+    }
+    
+    private void generateEnqueueContentionBurst() {
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            
+            // Create heavy enqueue contention by updating multiple rows
+            try (PreparedStatement pstmt = conn.prepareStatement(
+                "UPDATE LOAD_TEST_LOCK_TARGET " +
+                "SET counter = counter + 1, data = 'Enqueue burst ' || SYSTIMESTAMP " +
+                "WHERE id BETWEEN ? AND ?")) {
+                
+                int startId = random.nextInt(50) + 1;
+                pstmt.setInt(1, startId);
+                pstmt.setInt(2, startId + 20);
+                pstmt.executeUpdate();
+                
+                // Hold the lock for a bit to create contention
+                Thread.sleep(5000);
+                conn.commit();
+            }
+            
+            System.out.println("  [Scheduled] Generated enqueue contention burst");
+        } catch (Exception e) {
+            System.err.println("Enqueue contention burst error: " + e.getMessage());
+        }
+    }
+    
+    private void generateRowLevelLocking() {
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            
+            // Lock specific rows to create blocking sessions
+            try (PreparedStatement pstmt = conn.prepareStatement(
+                "SELECT * FROM LOAD_TEST_ORDERS WHERE order_id BETWEEN ? AND ? FOR UPDATE")) {
+                
+                int startId = random.nextInt(40000) + 1;
+                pstmt.setInt(1, startId);
+                pstmt.setInt(2, startId + 100);
+                pstmt.executeQuery();
+                
+                // Hold locks to create blocking
+                Thread.sleep(8000);
+                conn.rollback();
+            }
+            
+            System.out.println("  [Scheduled] Generated row-level locking contention");
+        } catch (Exception e) {
+            System.err.println("Row-level locking error: " + e.getMessage());
+        }
+    }
+    
+    private void generateBufferCacheContention() {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
+            
+            // Force buffer cache contention with concurrent updates to hot blocks
+            for (int i = 0; i < 10; i++) {
+                int hotRowId = random.nextInt(10) + 1;
+                stmt.executeUpdate(
+                    "UPDATE LOAD_TEST_LOCK_TARGET " +
+                    "SET counter = counter + 1, last_update = SYSTIMESTAMP " +
+                    "WHERE id = " + hotRowId);
+            }
+            conn.commit();
+            
+            System.out.println("  [Scheduled] Generated buffer cache contention");
+        } catch (SQLException e) {
+            System.err.println("Buffer cache contention error: " + e.getMessage());
+        }
+    }
+    
+    private void generateSequenceContention() {
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            
+            // Rapid sequence access to create sequence cache contention
+            try (PreparedStatement pstmt = conn.prepareStatement(
+                "INSERT INTO LOAD_TEST_ORDERS " +
+                "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Sequence test')")) {
+                
+                for (int i = 0; i < 200; i++) {
+                    pstmt.setInt(1, random.nextInt(1000) + 1);
+                    pstmt.setInt(2, random.nextInt(500) + 1);
+                    pstmt.setDouble(3, random.nextDouble() * 1000);
+                    pstmt.addBatch();
+                }
+                pstmt.executeBatch();
+                conn.commit();
+            }
+            
+            System.out.println("  [Scheduled] Generated sequence contention (200 rapid inserts)");
+        } catch (SQLException e) {
+            System.err.println("Sequence contention error: " + e.getMessage());
+        }
+    }
+    
+    private void generateDBFileSyncWaits() {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
+            
+            // Generate sync waits with large data modifications
+            stmt.executeUpdate(
+                "INSERT INTO LOAD_TEST_ORDERS " +
+                "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000), MOD(LEVEL, 500), " +
+                "SYSDATE, DBMS_RANDOM.VALUE(1, 10000), 'PENDING', " +
+                "'Region' || MOD(LEVEL, 10), 'Rep' || MOD(LEVEL, 50), " +
+                "RPAD('DB file sync test', 2500, 'X') " +
+                "FROM dual CONNECT BY LEVEL <= 3000");
+            conn.commit();
+            
+            // Force checkpoint
+            stmt.execute("ALTER SYSTEM CHECKPOINT");
+            
+            System.out.println("  [Scheduled] Generated DB file sync waits");
+        } catch (SQLException e) {
+            System.err.println("DB file sync error: " + e.getMessage());
+        }
+    }
+    
+    private void generateControlFileWaits() {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            // Generate control file sequential reads
+            for (int i = 0; i < 20; i++) {
+                stmt.executeQuery(
+                    "SELECT name, value FROM v$parameter WHERE name LIKE '%control%'");
+                stmt.executeQuery(
+                    "SELECT status FROM v$instance");
+            }
+            
+            System.out.println("  [Scheduled] Generated control file access waits");
+        } catch (SQLException e) {
+            System.err.println("Control file waits error: " + e.getMessage());
+        }
+    }
+    
+    private void generateLibraryCachePinWaits() {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            // Create library cache pin waits with PL/SQL compilation
+            for (int i = 0; i < 15; i++) {
+                String procName = "TEMP_PROC_" + System.currentTimeMillis() + "_" + i;
+                try {
+                    stmt.execute(
+                        "CREATE OR REPLACE PROCEDURE " + procName + " AS " +
+                        "BEGIN " +
+                        "  FOR i IN 1..10 LOOP " +
+                        "    NULL; " +
+                        "  END LOOP; " +
+                        "END;");
+                    
+                    stmt.execute("DROP PROCEDURE " + procName);
+                } catch (SQLException e) {
+                    // Ignore errors for temp procedures
+                }
+            }
+            
+            System.out.println("  [Scheduled] Generated library cache pin waits (15 compilations)");
+        } catch (SQLException e) {
+            System.err.println("Library cache pin error: " + e.getMessage());
+        }
+    }
+    
+    private void generateRowCacheLockWaits() {
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            // Generate row cache lock waits with metadata queries
+            for (int i = 0; i < 50; i++) {
+                stmt.executeQuery(
+                    "SELECT table_name, tablespace_name, num_rows FROM user_tables WHERE table_name LIKE 'LOAD_TEST%'");
+                stmt.executeQuery(
+                    "SELECT sequence_name, min_value, max_value, increment_by FROM user_sequences WHERE sequence_name LIKE 'LOAD_TEST%'");
+                stmt.executeQuery(
+                    "SELECT index_name, uniqueness FROM user_indexes WHERE table_name LIKE 'LOAD_TEST%'");
+            }
+            
+            System.out.println("  [Scheduled] Generated row cache lock waits (150 metadata queries)");
+        } catch (SQLException e) {
+            System.err.println("Row cache lock error: " + e.getMessage());
         }
     }
     
