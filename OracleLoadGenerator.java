@@ -118,6 +118,7 @@ public class OracleLoadGenerator {
         System.out.println("Setting up test tables and data...");
         
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
             
             // Drop existing tables
             try {
