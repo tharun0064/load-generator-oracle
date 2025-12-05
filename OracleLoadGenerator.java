@@ -293,7 +293,7 @@ public class OracleLoadGenerator {
             stmt.executeUpdate(
                 "INSERT INTO LOAD_TEST_ORDERS " +
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
-                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000), MOD(LEVEL, 500), " +
+                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100), MOD(LEVEL, 50), " +
                 "SYSDATE, 999.99, 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Tablespace pressure test', 3500, 'X') " +
                 "FROM dual CONNECT BY LEVEL <= 5000");
@@ -326,7 +326,7 @@ public class OracleLoadGenerator {
                 "UPDATE LOAD_TEST_ORDERS " +
                 "SET order_amount = order_amount * 1.01, " +
                 "comments = SUBSTR(comments, 1, 3000) || ' UNDO_TEST' " +
-                "WHERE MOD(order_id, 100) = " + random.nextInt(100));
+                "WHERE MOD(order_id, 100) = 50");
             Thread.sleep(2000);
             conn.rollback();
             System.out.println("  [Scheduled] Generated undo segment activity");
@@ -338,11 +338,10 @@ public class OracleLoadGenerator {
     private void generateLibraryCacheContention() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             for (int i = 0; i < 50; i++) {
-                String dynamicSQL = "SELECT COUNT(*) FROM LOAD_TEST_ORDERS WHERE customer_id = " + 
-                    random.nextInt(1000) + " AND region = 'Region" + random.nextInt(10) + "'";
+                String dynamicSQL = "SELECT COUNT(*) FROM LOAD_TEST_ORDERS WHERE customer_id = 500 AND region = 'Region5'";
                 stmt.executeQuery(dynamicSQL);
             }
-            System.out.println("  [Scheduled] Generated library cache contention (50 unique SQLs)");
+            System.out.println("  [Scheduled] Generated library cache contention (50 identical SQLs)");
         } catch (SQLException e) {
             System.err.println("Library cache error: " + e.getMessage());
         }
@@ -366,8 +365,8 @@ public class OracleLoadGenerator {
             stmt.executeUpdate(
                 "INSERT INTO LOAD_TEST_ORDERS " +
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
-                "SELECT load_test_order_seq.NEXTVAL, LEVEL, LEVEL, SYSDATE, " +
-                "DBMS_RANDOM.VALUE(1, 1000), 'PENDING', 'Region0', 'Rep1', " +
+                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100), MOD(LEVEL, 50), SYSDATE, " +
+                "100.00, 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Checkpoint test', 2000, 'Y') " +
                 "FROM dual CONNECT BY LEVEL <= 10000");
             conn.commit();
@@ -408,7 +407,7 @@ public class OracleLoadGenerator {
                 String uniqueSQL = "SELECT /* PARSE_TEST_" + System.currentTimeMillis() + "_" + i + 
                     " */ order_amount FROM LOAD_TEST_ORDERS WHERE order_id = ?";
                 try (PreparedStatement pstmt = conn.prepareStatement(uniqueSQL)) {
-                    pstmt.setInt(1, random.nextInt(50000) + 1);
+                    pstmt.setInt(1, 25000);
                     pstmt.executeQuery();
                 }
             }
@@ -425,7 +424,7 @@ public class OracleLoadGenerator {
                  "FROM LOAD_TEST_ORDERS WHERE order_id = ?")) {
             
             for (int i = 0; i < 1000; i++) {
-                pstmt.setInt(1, random.nextInt(50000) + 1);
+                pstmt.setInt(1, 25000);
                 try (ResultSet rs = pstmt.executeQuery()) {
                     while (rs.next()) {
                         rs.getInt(1);
@@ -454,9 +453,9 @@ public class OracleLoadGenerator {
                 "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Index contention')")) {
                 
                 for (int i = 0; i < 1000; i++) {
-                    pstmt.setInt(1, random.nextInt(100) + 1);
-                    pstmt.setInt(2, random.nextInt(50) + 1);
-                    pstmt.setDouble(3, random.nextDouble() * 1000);
+                    pstmt.setInt(1, 50);
+                    pstmt.setInt(2, 25);
+                    pstmt.setDouble(3, 500.00);
                     pstmt.addBatch();
                     
                     if (i % 100 == 0) {
@@ -508,7 +507,7 @@ public class OracleLoadGenerator {
                     // Process results
                 }
                 System.out.println("Executed CPU-intensive query");
-                Thread.sleep(1000);
+                Thread.sleep(500); // Reduced from 1000ms to 500ms for higher frequency
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("CPU query error: " + e.getMessage());
@@ -535,8 +534,8 @@ public class OracleLoadGenerator {
             
             "INSERT INTO LOAD_TEST_ORDERS " +
             "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
-            "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000) + 1, MOD(LEVEL, 500) + 1, " +
-            "SYSDATE, ROUND(DBMS_RANDOM.VALUE(10, 1000), 2), 'PENDING', " +
+            "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100) + 1, MOD(LEVEL, 50) + 1, " +
+            "SYSDATE, 100.00, 'PENDING', " +
             "'Region' || MOD(LEVEL, 10), 'Rep' || MOD(LEVEL, 50), RPAD('Bulk insert', 500, ' data') " +
             "FROM dual CONNECT BY LEVEL <= 1000"
         };
@@ -623,7 +622,7 @@ public class OracleLoadGenerator {
         while (running.get()) {
             try (Connection conn = getConnection()) {
                 conn.setAutoCommit(false);
-                int rowId = random.nextInt(100) + 1;
+                int rowId = 50;
                 
                 try (PreparedStatement pstmt = conn.prepareStatement(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
@@ -652,9 +651,9 @@ public class OracleLoadGenerator {
                      "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Latch contention test')")) {
                 
                 conn.setAutoCommit(false);
-                pstmt.setInt(1, random.nextInt(1000) + 1);
-                pstmt.setInt(2, random.nextInt(500) + 1);
-                pstmt.setDouble(3, random.nextDouble() * 1000);
+                pstmt.setInt(1, 500);
+                pstmt.setInt(2, 250);
+                pstmt.setDouble(3, 500.00);
                 pstmt.executeUpdate();
                 conn.commit();
                 
@@ -676,7 +675,7 @@ public class OracleLoadGenerator {
                      "WHERE id = ?")) {
                 
                 conn.setAutoCommit(false);
-                int hotRowId = random.nextInt(10) + 1;
+                int hotRowId = 5;
                 pstmt.setInt(1, workerId);
                 pstmt.setInt(2, hotRowId);
                 pstmt.executeUpdate();
@@ -743,7 +742,7 @@ public class OracleLoadGenerator {
                  PreparedStatement pstmt = conn.prepareStatement(
                      "SELECT order_amount FROM LOAD_TEST_ORDERS WHERE order_id = ?")) {
                 
-                int orderId = random.nextInt(50000) + 1;
+                int orderId = 25000;
                 pstmt.setInt(1, orderId);
                 
                 try (ResultSet rs = pstmt.executeQuery()) {
@@ -771,7 +770,7 @@ public class OracleLoadGenerator {
                 "SET counter = counter + 1, data = 'Enqueue burst ' || SYSTIMESTAMP " +
                 "WHERE id BETWEEN ? AND ?")) {
                 
-                int startId = random.nextInt(50) + 1;
+                int startId = 25;
                 pstmt.setInt(1, startId);
                 pstmt.setInt(2, startId + 20);
                 pstmt.executeUpdate();
@@ -795,7 +794,7 @@ public class OracleLoadGenerator {
             try (PreparedStatement pstmt = conn.prepareStatement(
                 "SELECT * FROM LOAD_TEST_ORDERS WHERE order_id BETWEEN ? AND ? FOR UPDATE")) {
                 
-                int startId = random.nextInt(40000) + 1;
+                int startId = 20000;
                 pstmt.setInt(1, startId);
                 pstmt.setInt(2, startId + 100);
                 pstmt.executeQuery();
@@ -817,7 +816,7 @@ public class OracleLoadGenerator {
             
             // Force buffer cache contention with concurrent updates to hot blocks
             for (int i = 0; i < 10; i++) {
-                int hotRowId = random.nextInt(10) + 1;
+                int hotRowId = 5;
                 stmt.executeUpdate(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
                     "SET counter = counter + 1, last_update = SYSTIMESTAMP " +
@@ -842,9 +841,9 @@ public class OracleLoadGenerator {
                 "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Sequence test')")) {
                 
                 for (int i = 0; i < 500; i++) {
-                    pstmt.setInt(1, random.nextInt(1000) + 1);
-                    pstmt.setInt(2, random.nextInt(500) + 1);
-                    pstmt.setDouble(3, random.nextDouble() * 1000);
+                    pstmt.setInt(1, 500);
+                    pstmt.setInt(2, 250);
+                    pstmt.setDouble(3, 500.00);
                     pstmt.addBatch();
                 }
                 pstmt.executeBatch();
@@ -865,8 +864,8 @@ public class OracleLoadGenerator {
             stmt.executeUpdate(
                 "INSERT INTO LOAD_TEST_ORDERS " +
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
-                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000), MOD(LEVEL, 500), " +
-                "SYSDATE, DBMS_RANDOM.VALUE(1, 10000), 'PENDING', " +
+                "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100), MOD(LEVEL, 50), " +
+                "SYSDATE, 500.00, 'PENDING', " +
                 "'Region' || MOD(LEVEL, 10), 'Rep' || MOD(LEVEL, 50), " +
                 "RPAD('DB file sync test', 2500, 'X') " +
                 "FROM dual CONNECT BY LEVEL <= 5000");
