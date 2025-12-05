@@ -492,14 +492,15 @@ public class OracleLoadGenerator {
             
             "INSERT INTO LOAD_TEST_ORDERS " +
             "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
-            "SELECT load_test_order_seq.NEXTVAL, MOD(ROWNUM, 1000) + 1, MOD(ROWNUM, 500) + 1, " +
+            "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000) + 1, MOD(LEVEL, 500) + 1, " +
             "SYSDATE, ROUND(DBMS_RANDOM.VALUE(10, 1000), 2), 'PENDING', " +
-            "'Region' || MOD(ROWNUM, 10), 'Rep' || MOD(ROWNUM, 50), RPAD('Bulk insert', 500, ' data') " +
+            "'Region' || MOD(LEVEL, 10), 'Rep' || MOD(LEVEL, 50), RPAD('Bulk insert', 500, ' data') " +
             "FROM dual CONNECT BY LEVEL <= 1000"
         };
         
         while (running.get()) {
             try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
                 String query = queries[random.nextInt(queries.length)];
                 if (query.startsWith("INSERT")) {
                     stmt.executeUpdate(query);
