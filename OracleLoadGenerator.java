@@ -52,7 +52,7 @@ public class OracleLoadGenerator {
     private final List<Connection> blockedConnections = new ArrayList<>();
     
     public OracleLoadGenerator() {
-        this.executorService = Executors.newFixedThreadPool(20);
+        this.executorService = Executors.newFixedThreadPool(50);
     }
     
     private static Map<String, String> loadEnvFile(String filePath) {
@@ -166,7 +166,7 @@ public class OracleLoadGenerator {
             stmt.execute("CREATE SEQUENCE load_test_order_seq START WITH 1 INCREMENT BY 1");
             stmt.execute("CREATE SEQUENCE load_test_lock_seq START WITH 1 INCREMENT BY 1");
             
-            System.out.println("Inserting test data (50,000 orders)...");
+            System.out.println("Inserting test data (100,000 orders)...");
             
             stmt.execute("INSERT INTO LOAD_TEST_ORDERS " +
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
@@ -184,7 +184,7 @@ public class OracleLoadGenerator {
                 "'Region' || MOD(LEVEL, 10), " +
                 "'Rep' || MOD(LEVEL, 50), " +
                 "RPAD('Order data ' || LEVEL, 1000, ' padding') " +
-                "FROM dual CONNECT BY LEVEL <= 50000");
+                "FROM dual CONNECT BY LEVEL <= 100000");
             
             stmt.execute("INSERT INTO LOAD_TEST_LOCK_TARGET (id, data, counter) " +
                 "SELECT load_test_lock_seq.NEXTVAL, 'Lock target ' || LEVEL, 0 " +
@@ -199,16 +199,42 @@ public class OracleLoadGenerator {
     private void start() {
         System.out.println("Starting load generators...");
         
-        executorService.submit(this::generateCPUIntensiveQueries);
-        executorService.submit(this::generateIOIntensiveOperations);
-        executorService.submit(this::generateLockContention);
-        executorService.submit(this::generateEnqueueWaits);
-        executorService.submit(this::generateLatchWaits);
-        executorService.submit(this::generateLogFileWaits);
-        executorService.submit(this::generateDirectPathReads);
-        executorService.submit(this::generateDBFileSequentialReads);
+        // Multiple instances of CPU intensive queries
+        for (int i = 0; i < 3; i++) {
+            executorService.submit(this::generateCPUIntensiveQueries);
+        }
         
-        for (int i = 0; i < 10; i++) {
+        // Multiple instances of I/O intensive operations
+        for (int i = 0; i < 3; i++) {
+            executorService.submit(this::generateIOIntensiveOperations);
+        }
+        
+        executorService.submit(this::generateLockContention);
+        
+        // More enqueue and latch generators
+        for (int i = 0; i < 5; i++) {
+            executorService.submit(this::generateEnqueueWaits);
+        }
+        
+        for (int i = 0; i < 3; i++) {
+            executorService.submit(this::generateLatchWaits);
+        }
+        
+        // More log file generators
+        for (int i = 0; i < 3; i++) {
+            executorService.submit(this::generateLogFileWaits);
+        }
+        
+        for (int i = 0; i < 2; i++) {
+            executorService.submit(this::generateDirectPathReads);
+        }
+        
+        for (int i = 0; i < 3; i++) {
+            executorService.submit(this::generateDBFileSequentialReads);
+        }
+        
+        // Increase buffer busy wait workers from 10 to 20
+        for (int i = 0; i < 20; i++) {
             final int workerId = i;
             executorService.submit(() -> generateBufferBusyWaits(workerId));
         }
@@ -219,11 +245,11 @@ public class OracleLoadGenerator {
     }
     
     private void scheduledMetricsGenerator() {
-        System.out.println("Starting scheduled metrics generator (runs every 10 seconds)...");
+        System.out.println("Starting scheduled metrics generator (runs every 5 seconds)...");
         
         while (running.get()) {
             try {
-                Thread.sleep(10000);
+                Thread.sleep(5000);
                 
                 System.out.println("\n=== Scheduled Metrics Burst ===");
                 
@@ -270,7 +296,7 @@ public class OracleLoadGenerator {
                 "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000), MOD(LEVEL, 500), " +
                 "SYSDATE, 999.99, 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Tablespace pressure test', 3500, 'X') " +
-                "FROM dual CONNECT BY LEVEL <= 2000");
+                "FROM dual CONNECT BY LEVEL <= 5000");
             conn.commit();
             System.out.println("  [Scheduled] Generated tablespace pressure");
         } catch (SQLException e) {
@@ -343,7 +369,7 @@ public class OracleLoadGenerator {
                 "SELECT load_test_order_seq.NEXTVAL, LEVEL, LEVEL, SYSDATE, " +
                 "DBMS_RANDOM.VALUE(1, 1000), 'PENDING', 'Region0', 'Rep1', " +
                 "RPAD('Checkpoint test', 2000, 'Y') " +
-                "FROM dual CONNECT BY LEVEL <= 5000");
+                "FROM dual CONNECT BY LEVEL <= 10000");
             conn.commit();
             
             stmt.executeUpdate(
@@ -360,14 +386,14 @@ public class OracleLoadGenerator {
     private void generateArchiveLogActivity() {
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             conn.setAutoCommit(false);
-            for (int batch = 0; batch < 5; batch++) {
+            for (int batch = 0; batch < 10; batch++) {
                 stmt.executeUpdate(
                     "INSERT INTO LOAD_TEST_ORDERS " +
                     "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                     "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 500), MOD(LEVEL, 250), " +
                     "SYSDATE, 100, 'PENDING', 'Region0', 'Rep1', " +
                     "RPAD('Archive log generation', 1500, 'Z') " +
-                    "FROM dual CONNECT BY LEVEL <= 1000");
+                    "FROM dual CONNECT BY LEVEL <= 2000");
                 conn.commit();
             }
             System.out.println("  [Scheduled] Generated archive log activity (heavy redo)");
@@ -427,7 +453,7 @@ public class OracleLoadGenerator {
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                 "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Index contention')")) {
                 
-                for (int i = 0; i < 500; i++) {
+                for (int i = 0; i < 1000; i++) {
                     pstmt.setInt(1, random.nextInt(100) + 1);
                     pstmt.setInt(2, random.nextInt(50) + 1);
                     pstmt.setDouble(3, random.nextDouble() * 1000);
@@ -441,7 +467,7 @@ public class OracleLoadGenerator {
                 conn.commit();
             }
             
-            System.out.println("  [Scheduled] Generated index contention (500 inserts on PK)");
+            System.out.println("  [Scheduled] Generated index contention (1000 inserts on PK)");
         } catch (SQLException e) {
             System.err.println("Index contention error: " + e.getMessage());
         }
@@ -482,7 +508,7 @@ public class OracleLoadGenerator {
                     // Process results
                 }
                 System.out.println("Executed CPU-intensive query");
-                Thread.sleep(2000);
+                Thread.sleep(1000);
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("CPU query error: " + e.getMessage());
@@ -530,7 +556,7 @@ public class OracleLoadGenerator {
                     }
                 }
                 System.out.println("Executed I/O-intensive operation");
-                Thread.sleep(3000);
+                Thread.sleep(1500);
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("I/O query error: " + e.getMessage());
@@ -815,7 +841,7 @@ public class OracleLoadGenerator {
                 "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                 "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Sequence test')")) {
                 
-                for (int i = 0; i < 200; i++) {
+                for (int i = 0; i < 500; i++) {
                     pstmt.setInt(1, random.nextInt(1000) + 1);
                     pstmt.setInt(2, random.nextInt(500) + 1);
                     pstmt.setDouble(3, random.nextDouble() * 1000);
@@ -825,7 +851,7 @@ public class OracleLoadGenerator {
                 conn.commit();
             }
             
-            System.out.println("  [Scheduled] Generated sequence contention (200 rapid inserts)");
+            System.out.println("  [Scheduled] Generated sequence contention (500 rapid inserts)");
         } catch (SQLException e) {
             System.err.println("Sequence contention error: " + e.getMessage());
         }
@@ -843,7 +869,7 @@ public class OracleLoadGenerator {
                 "SYSDATE, DBMS_RANDOM.VALUE(1, 10000), 'PENDING', " +
                 "'Region' || MOD(LEVEL, 10), 'Rep' || MOD(LEVEL, 50), " +
                 "RPAD('DB file sync test', 2500, 'X') " +
-                "FROM dual CONNECT BY LEVEL <= 3000");
+                "FROM dual CONNECT BY LEVEL <= 5000");
             conn.commit();
             
             // Force checkpoint
