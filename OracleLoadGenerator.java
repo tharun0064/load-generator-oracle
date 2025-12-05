@@ -133,7 +133,7 @@ public class OracleLoadGenerator {
             // Drop existing sequences
             try {
                 stmt.execute("BEGIN " +
-                    "FOR s IN (SELECT sequence_name FROM user_sequences WHERE sequence_name LIKE 'LOAD_TEST_%') LOOP " +
+                    "FOR s IN (SELECT sequence_name FROM user_sequences WHERE sequence_name IN ('LOAD_TEST_ORDER_SEQ', 'LOAD_TEST_LOCK_SEQ')) LOOP " +
                     "EXECUTE IMMEDIATE 'DROP SEQUENCE ' || s.sequence_name; " +
                     "END LOOP; " +
                     "END;");
