@@ -159,7 +159,7 @@ public class OracleLoadGenerator {
             
             stmt.execute("CREATE TABLE LOAD_TEST_LOCK_TARGET (" +
                 "id NUMBER PRIMARY KEY, " +
-                "data VARCHAR2(100), " +
+                "data VARCHAR2(500), " +
                 "counter NUMBER DEFAULT 0, " +
                 "last_update TIMESTAMP DEFAULT SYSTIMESTAMP)");
             
@@ -607,6 +607,7 @@ public class OracleLoadGenerator {
                      "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
                      "VALUES (load_test_order_seq.NEXTVAL, ?, ?, SYSDATE, ?, 'PENDING', 'Region0', 'Rep1', 'Latch contention test')")) {
                 
+                conn.setAutoCommit(false);
                 pstmt.setInt(1, random.nextInt(1000) + 1);
                 pstmt.setInt(2, random.nextInt(500) + 1);
                 pstmt.setDouble(3, random.nextDouble() * 1000);
@@ -627,9 +628,10 @@ public class OracleLoadGenerator {
             try (Connection conn = getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(
                      "UPDATE LOAD_TEST_LOCK_TARGET " +
-                     "SET counter = counter + 1, data = 'Worker' || ? || ' ' || data " +
+                     "SET counter = counter + 1, data = SUBSTR('Worker' || ? || ' updated', 1, 100) " +
                      "WHERE id = ?")) {
                 
+                conn.setAutoCommit(false);
                 int hotRowId = random.nextInt(10) + 1;
                 pstmt.setInt(1, workerId);
                 pstmt.setInt(2, hotRowId);
@@ -648,11 +650,13 @@ public class OracleLoadGenerator {
     private void generateLogFileWaits() {
         while (running.get()) {
             try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
                 stmt.executeUpdate(
                     "INSERT INTO LOAD_TEST_ORDERS " +
-                    "SELECT load_test_order_seq.NEXTVAL, MOD(ROWNUM, 1000) + 1, MOD(ROWNUM, 500) + 1, " +
+                    "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                    "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 1000) + 1, MOD(LEVEL, 500) + 1, " +
                     "SYSDATE, ROUND(DBMS_RANDOM.VALUE(10, 1000), 2), 'PENDING', " +
-                    "'Region' || MOD(ROWNUM, 10), 'Rep1', RPAD('Redo generation', 2000, ' heavy write load') " +
+                    "'Region' || MOD(LEVEL, 10), 'Rep1', RPAD('Redo generation', 2000, ' heavy write load') " +
                     "FROM dual CONNECT BY LEVEL <= 500");
                 conn.commit();
                 
