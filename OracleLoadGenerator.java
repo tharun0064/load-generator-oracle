@@ -119,6 +119,7 @@ public class OracleLoadGenerator {
         
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             
+            // Drop existing tables
             try {
                 stmt.execute("BEGIN " +
                     "FOR t IN (SELECT table_name FROM user_tables WHERE table_name LIKE 'LOAD_TEST_%') LOOP " +
@@ -127,6 +128,17 @@ public class OracleLoadGenerator {
                     "END;");
             } catch (SQLException e) {
                 // Ignore if no tables exist
+            }
+            
+            // Drop existing sequences
+            try {
+                stmt.execute("BEGIN " +
+                    "FOR s IN (SELECT sequence_name FROM user_sequences WHERE sequence_name LIKE 'LOAD_TEST_%') LOOP " +
+                    "EXECUTE IMMEDIATE 'DROP SEQUENCE ' || s.sequence_name; " +
+                    "END LOOP; " +
+                    "END;");
+            } catch (SQLException e) {
+                // Ignore if no sequences exist
             }
             
             System.out.println("Creating tables...");
