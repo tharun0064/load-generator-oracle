@@ -324,8 +324,8 @@ public class OracleLoadGenerator {
             conn.setAutoCommit(false);
             stmt.executeUpdate(
                 "UPDATE LOAD_TEST_ORDERS " +
-                "SET order_amount = order_amount * 1.01, " +
-                "comments = SUBSTR(comments, 1, 3000) || ' UNDO_TEST' " +
+                "SET order_amount = 250.50, " +
+                "comments = 'UNDO_SEGMENT_TEST' " +
                 "WHERE MOD(order_id, 100) = 50");
             Thread.sleep(2000);
             conn.rollback();
@@ -576,8 +576,8 @@ public class OracleLoadGenerator {
             try (Statement stmt = blockerConnection.createStatement()) {
                 stmt.executeUpdate(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
-                    "SET counter = counter + 1, last_update = SYSTIMESTAMP, " +
-                    "data = data || ' LOCKED' " +
+                    "SET counter = 200, last_update = SYSTIMESTAMP, " +
+                    "data = 'LOCKED' " +
                     "WHERE id BETWEEN 1 AND 50");
             }
             
@@ -596,7 +596,7 @@ public class OracleLoadGenerator {
                             stmt.setQueryTimeout(30);
                             stmt.executeUpdate(
                                 "UPDATE LOAD_TEST_LOCK_TARGET " +
-                                "SET counter = counter + 100, data = data || ' BLOCKED_SESSION' " +
+                                "SET counter = 300, data = 'BLOCKED_SESSION' " +
                                 "WHERE id BETWEEN 25 AND 75");
                             blockedConn.commit();
                             System.out.println("Blocked session " + sessionNum + " acquired lock");
@@ -626,7 +626,7 @@ public class OracleLoadGenerator {
                 
                 try (PreparedStatement pstmt = conn.prepareStatement(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
-                    "SET counter = counter + 1, last_update = SYSTIMESTAMP " +
+                    "SET counter = 150, last_update = SYSTIMESTAMP " +
                     "WHERE id = ?")) {
                     pstmt.setInt(1, rowId);
                     pstmt.executeUpdate();
@@ -671,13 +671,12 @@ public class OracleLoadGenerator {
             try (Connection conn = getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(
                      "UPDATE LOAD_TEST_LOCK_TARGET " +
-                     "SET counter = counter + 1, data = SUBSTR('Worker' || ? || ' updated', 1, 100) " +
+                     "SET counter = 250, data = 'BUFFER_BUSY' " +
                      "WHERE id = ?")) {
                 
                 conn.setAutoCommit(false);
                 int hotRowId = 5;
-                pstmt.setInt(1, workerId);
-                pstmt.setInt(2, hotRowId);
+                pstmt.setInt(1, hotRowId);
                 pstmt.executeUpdate();
                 conn.commit();
                 
@@ -767,7 +766,7 @@ public class OracleLoadGenerator {
             // Create heavy enqueue contention by updating multiple rows
             try (PreparedStatement pstmt = conn.prepareStatement(
                 "UPDATE LOAD_TEST_LOCK_TARGET " +
-                "SET counter = counter + 1, data = 'Enqueue burst ' || SYSTIMESTAMP " +
+                "SET counter = 400, data = 'ENQUEUE_BURST' " +
                 "WHERE id BETWEEN ? AND ?")) {
                 
                 int startId = 25;
@@ -819,7 +818,7 @@ public class OracleLoadGenerator {
                 int hotRowId = 5;
                 stmt.executeUpdate(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
-                    "SET counter = counter + 1, last_update = SYSTIMESTAMP " +
+                    "SET counter = 350, last_update = SYSTIMESTAMP " +
                     "WHERE id = " + hotRowId);
             }
             conn.commit();
