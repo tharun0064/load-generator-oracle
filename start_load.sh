@@ -8,8 +8,11 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "Starting Oracle Load Generator..."
-echo "Press Ctrl+C to stop"
+echo "Starting Oracle Load Generator in background..."
+echo "To stop: kill \$(cat load_generator.pid)"
 echo ""
 
-java -cp .:ojdbc8.jar OracleLoadGenerator
+nohup java -cp .:ojdbc8.jar OracleLoadGenerator > /dev/null 2>&1 &
+echo $! > load_generator.pid
+
+echo "Load generator started with PID: $(cat load_generator.pid)"
