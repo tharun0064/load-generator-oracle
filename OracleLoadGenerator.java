@@ -239,6 +239,25 @@ public class OracleLoadGenerator {
             executorService.submit(() -> generateBufferBusyWaits(workerId));
         }
         
+        // New scenarios
+        for (int i = 0; i < 2; i++) {
+            executorService.submit(this::generateDeadlockScenarios);
+        }
+        
+        for (int i = 0; i < 2; i++) {
+            executorService.submit(this::generateParallelQueryLoad);
+        }
+        
+        executorService.submit(this::generateLOBOperations);
+        executorService.submit(this::generatePLSQLLoad);
+        executorService.submit(this::generateBindVariableLoad);
+        executorService.submit(this::generateFlashbackQueries);
+        
+        for (int i = 0; i < 2; i++) {
+            executorService.submit(this::generateDirectPathWrites);
+        }
+        
+        executorService.submit(this::generatePartitionPruningTests);
         executorService.submit(this::scheduledMetricsGenerator);
         
         System.out.println("All load generators started successfully!");
@@ -936,6 +955,254 @@ public class OracleLoadGenerator {
             System.out.println("  [Scheduled] Generated row cache lock waits (150 metadata queries)");
         } catch (SQLException e) {
             System.err.println("Row cache lock error: " + e.getMessage());
+        }
+    }
+    
+    private void generateDeadlockScenarios() {
+        while (running.get()) {
+            try (Connection conn1 = getConnection(); Connection conn2 = getConnection()) {
+                conn1.setAutoCommit(false);
+                conn2.setAutoCommit(false);
+                
+                // Thread 1: Lock row 1, then try to lock row 2
+                try (Statement stmt1 = conn1.createStatement()) {
+                    stmt1.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 500 WHERE id = 1");
+                    Thread.sleep(100);
+                    
+                    // Thread 2: Lock row 2, then try to lock row 1
+                    executorService.submit(() -> {
+                        try (Statement stmt2 = conn2.createStatement()) {
+                            stmt2.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 600 WHERE id = 2");
+                            Thread.sleep(100);
+                            stmt2.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 700 WHERE id = 1");
+                            conn2.commit();
+                        } catch (Exception e) {
+                            try { conn2.rollback(); } catch (SQLException ex) {}
+                        }
+                    });
+                    
+                    stmt1.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 800 WHERE id = 2");
+                    conn1.commit();
+                }
+                
+                System.out.println("Generated deadlock scenario");
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Deadlock scenario: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateParallelQueryLoad() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                stmt.executeQuery(
+                    "SELECT /*+ PARALLEL(o, 8) FULL(o) */ " +
+                    "customer_id, product_id, " +
+                    "SUM(order_amount) as total, " +
+                    "AVG(order_amount) as avg_amt, " +
+                    "COUNT(*) as cnt, " +
+                    "STDDEV(order_amount) as stddev_amt " +
+                    "FROM LOAD_TEST_ORDERS o " +
+                    "GROUP BY customer_id, product_id " +
+                    "HAVING COUNT(*) > 1 " +
+                    "ORDER BY total DESC");
+                
+                System.out.println("Executed parallel query load");
+                Thread.sleep(3000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Parallel query error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateLOBOperations() {
+        while (running.get()) {
+            try (Connection conn = getConnection()) {
+                conn.setAutoCommit(false);
+                
+                // Write large LOB data
+                try (PreparedStatement pstmt = conn.prepareStatement(
+                    "UPDATE LOAD_TEST_ORDERS SET comments = ? WHERE order_id = 50000")) {
+                    String largeLob = new String(new char[3500]).replace('\0', 'L');
+                    pstmt.setString(1, largeLob);
+                    pstmt.executeUpdate();
+                    conn.commit();
+                }
+                
+                // Read LOB data
+                try (PreparedStatement pstmt = conn.prepareStatement(
+                    "SELECT comments FROM LOAD_TEST_ORDERS WHERE LENGTH(comments) > 1000 AND ROWNUM <= 100");
+                     ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next() && running.get()) {
+                        rs.getString(1);
+                    }
+                }
+                
+                System.out.println("Generated LOB operations");
+                Thread.sleep(2000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("LOB operations error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generatePLSQLLoad() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Create a test procedure if it doesn't exist
+                try {
+                    stmt.execute(
+                        "CREATE OR REPLACE PROCEDURE LOAD_TEST_PROC AS " +
+                        "  v_count NUMBER; " +
+                        "  v_sum NUMBER; " +
+                        "BEGIN " +
+                        "  FOR i IN 1..100 LOOP " +
+                        "    SELECT COUNT(*), SUM(order_amount) INTO v_count, v_sum " +
+                        "    FROM LOAD_TEST_ORDERS WHERE customer_id = MOD(i, 100); " +
+                        "    UPDATE LOAD_TEST_LOCK_TARGET SET counter = v_count WHERE id = MOD(i, 10) + 1; " +
+                        "  END LOOP; " +
+                        "  COMMIT; " +
+                        "END;");
+                } catch (SQLException e) {
+                    // Procedure might already exist
+                }
+                
+                // Execute the procedure
+                try (CallableStatement cstmt = conn.prepareCall("BEGIN LOAD_TEST_PROC; END;")) {
+                    cstmt.execute();
+                }
+                
+                System.out.println("Executed PL/SQL load");
+                Thread.sleep(4000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("PL/SQL load error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateBindVariableLoad() {
+        while (running.get()) {
+            try (Connection conn = getConnection()) {
+                // Use bind variables for better cursor sharing
+                try (PreparedStatement pstmt = conn.prepareStatement(
+                    "SELECT order_id, customer_id, order_amount, status " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "WHERE customer_id = ? AND status = ? AND order_amount > ?")) {
+                    
+                    for (int i = 0; i < 50; i++) {
+                        pstmt.setInt(1, 500);
+                        pstmt.setString(2, "PENDING");
+                        pstmt.setDouble(3, 100.00);
+                        
+                        try (ResultSet rs = pstmt.executeQuery()) {
+                            while (rs.next() && running.get()) {
+                                rs.getInt(1);
+                            }
+                        }
+                    }
+                }
+                
+                System.out.println("Generated bind variable load (50 executions)");
+                Thread.sleep(2000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Bind variable load error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateFlashbackQueries() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Query data as of 5 minutes ago
+                stmt.executeQuery(
+                    "SELECT order_id, customer_id, order_amount, status " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '5' MINUTE) " +
+                    "WHERE customer_id = 500 " +
+                    "AND ROWNUM <= 100");
+                
+                // Query versions of a specific row
+                stmt.executeQuery(
+                    "SELECT versions_starttime, versions_endtime, order_amount, status " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "VERSIONS BETWEEN TIMESTAMP MINVALUE AND MAXVALUE " +
+                    "WHERE order_id = 50000");
+                
+                System.out.println("Generated flashback queries");
+                Thread.sleep(6000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Flashback query error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateDirectPathWrites() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
+                
+                // Use APPEND hint for direct path writes
+                stmt.executeUpdate(
+                    "INSERT /*+ APPEND */ INTO LOAD_TEST_ORDERS " +
+                    "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                    "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100), MOD(LEVEL, 50), " +
+                    "SYSDATE, 150.00, 'PENDING', 'Region0', 'Rep1', " +
+                    "RPAD('Direct path write test', 1000, 'D') " +
+                    "FROM dual CONNECT BY LEVEL <= 1000");
+                
+                conn.commit();
+                
+                System.out.println("Generated direct path writes");
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Direct path write error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generatePartitionPruningTests() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Simulate partition access patterns
+                stmt.executeQuery(
+                    "SELECT /*+ FULL(o) */ " +
+                    "customer_id, region, COUNT(*) as cnt, SUM(order_amount) as total " +
+                    "FROM LOAD_TEST_ORDERS o " +
+                    "WHERE region = 'Region5' " +
+                    "AND order_date >= SYSDATE - 30 " +
+                    "GROUP BY customer_id, region " +
+                    "ORDER BY total DESC");
+                
+                // Range scan simulation
+                stmt.executeQuery(
+                    "SELECT order_id, customer_id, order_amount " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "WHERE order_date BETWEEN SYSDATE - 60 AND SYSDATE - 30 " +
+                    "AND status = 'COMPLETED' " +
+                    "ORDER BY order_date");
+                
+                System.out.println("Generated partition pruning tests");
+                Thread.sleep(4000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Partition pruning error: " + e.getMessage());
+                }
+            }
         }
     }
     
