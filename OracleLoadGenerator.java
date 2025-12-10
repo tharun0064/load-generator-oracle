@@ -258,6 +258,17 @@ public class OracleLoadGenerator {
         }
         
         executorService.submit(this::generatePartitionPruningTests);
+        executorService.submit(this::generateMaterializedViewRefresh);
+        executorService.submit(this::generateCursorLeaks);
+        executorService.submit(this::generateTransactionRollbackPatterns);
+        executorService.submit(this::generateSortSpillOperations);
+        executorService.submit(this::generateHashJoinOperations);
+        executorService.submit(this::generateNestedLoopJoins);
+        executorService.submit(this::generateBitmapIndexOperations);
+        executorService.submit(this::generateGlobalTempTableOps);
+        executorService.submit(this::generateTableFragmentation);
+        executorService.submit(this::generateAuditTrailLoad);
+        
         executorService.submit(this::scheduledMetricsGenerator);
         
         System.out.println("All load generators started successfully!");
@@ -1201,6 +1212,326 @@ public class OracleLoadGenerator {
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("Partition pruning error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateMaterializedViewRefresh() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Create materialized view if it doesn't exist
+                try {
+                    stmt.execute(
+                        "CREATE MATERIALIZED VIEW LOAD_TEST_MV " +
+                        "BUILD IMMEDIATE REFRESH COMPLETE ON DEMAND AS " +
+                        "SELECT region, status, COUNT(*) as order_count, " +
+                        "SUM(order_amount) as total_amount, " +
+                        "AVG(order_amount) as avg_amount " +
+                        "FROM LOAD_TEST_ORDERS " +
+                        "GROUP BY region, status");
+                } catch (SQLException e) {
+                    // MV might already exist
+                }
+                
+                // Refresh the materialized view
+                stmt.execute("BEGIN DBMS_MVIEW.REFRESH('LOAD_TEST_MV', 'C'); END;");
+                
+                // Query the materialized view
+                stmt.executeQuery(
+                    "SELECT * FROM LOAD_TEST_MV " +
+                    "WHERE order_count > 10 " +
+                    "ORDER BY total_amount DESC");
+                
+                System.out.println("Generated materialized view refresh");
+                Thread.sleep(10000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Materialized view error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateCursorLeaks() {
+        while (running.get()) {
+            try (Connection conn = getConnection()) {
+                // Simulate cursor leaks by opening many cursors
+                for (int i = 0; i < 50; i++) {
+                    PreparedStatement pstmt = conn.prepareStatement(
+                        "SELECT order_id, customer_id FROM LOAD_TEST_ORDERS WHERE customer_id = ?");
+                    pstmt.setInt(1, 500);
+                    ResultSet rs = pstmt.executeQuery();
+                    if (rs.next()) {
+                        rs.getInt(1);
+                    }
+                    // Intentionally not closing to simulate leak
+                    // They will be closed when connection closes
+                }
+                
+                System.out.println("Generated cursor leak scenario (50 open cursors)");
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Cursor leak error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateTransactionRollbackPatterns() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
+                
+                // Large transaction that will be rolled back
+                stmt.executeUpdate(
+                    "UPDATE LOAD_TEST_ORDERS " +
+                    "SET order_amount = 999.99, status = 'CANCELLED' " +
+                    "WHERE MOD(order_id, 10) = 5");
+                
+                stmt.executeUpdate(
+                    "INSERT INTO LOAD_TEST_ORDERS " +
+                    "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                    "SELECT load_test_order_seq.NEXTVAL, 100, 50, SYSDATE, 200.00, 'PENDING', " +
+                    "'Region0', 'Rep1', 'Rollback test' " +
+                    "FROM dual CONNECT BY LEVEL <= 500");
+                
+                // Rollback the transaction
+                Thread.sleep(2000);
+                conn.rollback();
+                
+                System.out.println("Generated transaction rollback pattern");
+                Thread.sleep(3000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Transaction rollback error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateSortSpillOperations() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Force sorts that may spill to disk
+                stmt.executeQuery(
+                    "SELECT /*+ USE_HASH(o1 o2) */ " +
+                    "o1.customer_id, o2.product_id, " +
+                    "o1.order_amount + o2.order_amount as combined, " +
+                    "RANK() OVER (PARTITION BY o1.region ORDER BY o1.order_amount DESC) as rnk " +
+                    "FROM LOAD_TEST_ORDERS o1, LOAD_TEST_ORDERS o2 " +
+                    "WHERE o1.status = o2.status " +
+                    "AND ROWNUM <= 50000 " +
+                    "ORDER BY combined DESC, o1.customer_id, o2.product_id");
+                
+                System.out.println("Generated sort spill operations");
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Sort spill error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateHashJoinOperations() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Force hash joins
+                stmt.executeQuery(
+                    "SELECT /*+ USE_HASH(o l) */ " +
+                    "o.order_id, o.customer_id, o.order_amount, " +
+                    "l.id, l.counter " +
+                    "FROM LOAD_TEST_ORDERS o " +
+                    "JOIN LOAD_TEST_LOCK_TARGET l ON MOD(o.customer_id, 100) = l.id " +
+                    "WHERE o.status = 'PENDING' " +
+                    "AND o.order_amount > 100.00");
+                
+                System.out.println("Generated hash join operations");
+                Thread.sleep(3000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Hash join error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateNestedLoopJoins() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Force nested loop joins
+                stmt.executeQuery(
+                    "SELECT /*+ USE_NL(o l) */ " +
+                    "o.order_id, o.customer_id, o.order_amount, " +
+                    "l.data, l.counter " +
+                    "FROM LOAD_TEST_ORDERS o, LOAD_TEST_LOCK_TARGET l " +
+                    "WHERE o.customer_id = l.id " +
+                    "AND o.order_id BETWEEN 1000 AND 2000 " +
+                    "AND l.id <= 50");
+                
+                System.out.println("Generated nested loop join operations");
+                Thread.sleep(2500);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Nested loop join error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateBitmapIndexOperations() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Create bitmap index if it doesn't exist
+                try {
+                    stmt.execute(
+                        "CREATE BITMAP INDEX LOAD_TEST_STATUS_BITMAP " +
+                        "ON LOAD_TEST_ORDERS(status)");
+                    stmt.execute(
+                        "CREATE BITMAP INDEX LOAD_TEST_REGION_BITMAP " +
+                        "ON LOAD_TEST_ORDERS(region)");
+                } catch (SQLException e) {
+                    // Indexes might already exist
+                }
+                
+                // Queries that benefit from bitmap indexes
+                stmt.executeQuery(
+                    "SELECT COUNT(*) " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "WHERE status IN ('PENDING', 'PROCESSING') " +
+                    "AND region IN ('Region0', 'Region1', 'Region2')");
+                
+                stmt.executeQuery(
+                    "SELECT status, region, COUNT(*) as cnt " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "WHERE status IN ('COMPLETED', 'CANCELLED') " +
+                    "GROUP BY status, region " +
+                    "HAVING COUNT(*) > 10");
+                
+                System.out.println("Generated bitmap index operations");
+                Thread.sleep(4000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Bitmap index error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateGlobalTempTableOps() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Create global temp table if it doesn't exist
+                try {
+                    stmt.execute(
+                        "CREATE GLOBAL TEMPORARY TABLE LOAD_TEST_GTT ( " +
+                        "session_id NUMBER, " +
+                        "customer_id NUMBER, " +
+                        "total_amount NUMBER, " +
+                        "order_count NUMBER) " +
+                        "ON COMMIT DELETE ROWS");
+                } catch (SQLException e) {
+                    // GTT might already exist
+                }
+                
+                conn.setAutoCommit(false);
+                
+                // Populate GTT
+                stmt.executeUpdate(
+                    "INSERT INTO LOAD_TEST_GTT " +
+                    "SELECT 1 as session_id, customer_id, " +
+                    "SUM(order_amount) as total, COUNT(*) as cnt " +
+                    "FROM LOAD_TEST_ORDERS " +
+                    "WHERE status = 'COMPLETED' " +
+                    "GROUP BY customer_id " +
+                    "HAVING COUNT(*) > 5");
+                
+                // Query GTT
+                stmt.executeQuery(
+                    "SELECT customer_id, total_amount, order_count " +
+                    "FROM LOAD_TEST_GTT " +
+                    "WHERE total_amount > 1000.00 " +
+                    "ORDER BY total_amount DESC");
+                
+                conn.commit();
+                
+                System.out.println("Generated global temp table operations");
+                Thread.sleep(3000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Global temp table error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateTableFragmentation() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
+                
+                // Create fragmentation with random deletes and inserts
+                stmt.executeUpdate(
+                    "DELETE FROM LOAD_TEST_ORDERS " +
+                    "WHERE MOD(order_id, 100) = 77 " +
+                    "AND ROWNUM <= 100");
+                
+                stmt.executeUpdate(
+                    "INSERT INTO LOAD_TEST_ORDERS " +
+                    "(order_id, customer_id, product_id, order_date, order_amount, status, region, sales_rep, comments) " +
+                    "SELECT load_test_order_seq.NEXTVAL, MOD(LEVEL, 100), MOD(LEVEL, 50), " +
+                    "SYSDATE, 175.00, 'PENDING', 'Region' || MOD(LEVEL, 10), 'Rep1', " +
+                    "RPAD('Fragmentation test', 800, 'F') " +
+                    "FROM dual CONNECT BY LEVEL <= 150");
+                
+                conn.commit();
+                
+                // Force full table scan to read fragmented blocks
+                stmt.executeQuery(
+                    "SELECT /*+ FULL(o) */ COUNT(*), AVG(order_amount) " +
+                    "FROM LOAD_TEST_ORDERS o " +
+                    "WHERE status <> 'ARCHIVED'");
+                
+                System.out.println("Generated table fragmentation load");
+                Thread.sleep(5000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Table fragmentation error: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    private void generateAuditTrailLoad() {
+        while (running.get()) {
+            try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // Simulate audit trail queries
+                stmt.executeQuery(
+                    "SELECT username, action_name, obj_name, extended_timestamp " +
+                    "FROM dba_audit_trail " +
+                    "WHERE username = USER " +
+                    "AND extended_timestamp > SYSTIMESTAMP - INTERVAL '1' HOUR " +
+                    "AND ROWNUM <= 100");
+                
+                // Query unified audit trail
+                try {
+                    stmt.executeQuery(
+                        "SELECT dbusername, event_timestamp, action_name, object_name " +
+                        "FROM unified_audit_trail " +
+                        "WHERE dbusername = USER " +
+                        "AND event_timestamp > SYSTIMESTAMP - INTERVAL '1' HOUR " +
+                        "AND ROWNUM <= 100");
+                } catch (SQLException e) {
+                    // Unified audit might not be enabled
+                }
+                
+                System.out.println("Generated audit trail load");
+                Thread.sleep(8000);
+            } catch (Exception e) {
+                if (running.get()) {
+                    System.err.println("Audit trail error: " + e.getMessage());
                 }
             }
         }
