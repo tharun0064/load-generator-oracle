@@ -271,8 +271,11 @@ public class OracleLoadGenerator {
 
         executorService.submit(this::scheduledMetricsGenerator);
         executorService.submit(this::continuousTableCleanup);
+        executorService.submit(this::periodicStatusReport);
 
         System.out.println("All load generators started successfully!");
+        System.out.println("Status reports will appear every 30 seconds...");
+        System.out.flush();
     }
     
     private void scheduledMetricsGenerator() {
@@ -952,9 +955,14 @@ public class OracleLoadGenerator {
                     conn1.commit();
                 }
                 Thread.sleep(5000);
+            } catch (SQLException e) {
+                // ORA-00060: Deadlock is expected and intentional for this generator
+                if (running.get() && e.getErrorCode() != 60) {
+                    System.err.println("Deadlock scenario error: " + e.getMessage());
+                }
             } catch (Exception e) {
                 if (running.get()) {
-                    System.err.println("Deadlock scenario: " + e.getMessage());
+                    System.err.println("Deadlock scenario error: " + e.getMessage());
                 }
             }
         }
@@ -1020,26 +1028,53 @@ public class OracleLoadGenerator {
                 // Create a test procedure if it doesn't exist
                 try {
                     stmt.execute(
-                        "CREATE OR REPLACE PROCEDURE LOAD_TEST_PROC AS " +
+                        "CREATE OR REPLACE PROCEDURE LOAD_TEST_PROC IS " +
                         "  v_count NUMBER; " +
                         "  v_sum NUMBER; " +
                         "BEGIN " +
                         "  FOR i IN 1..100 LOOP " +
-                        "    SELECT COUNT(*), SUM(order_amount) INTO v_count, v_sum " +
-                        "    FROM LOAD_TEST_ORDERS WHERE customer_id = MOD(i, 100); " +
-                        "    UPDATE LOAD_TEST_LOCK_TARGET SET counter = v_count WHERE id = MOD(i, 10) + 1; " +
+                        "    BEGIN " +
+                        "      SELECT COUNT(*), SUM(order_amount) INTO v_count, v_sum " +
+                        "      FROM LOAD_TEST_ORDERS WHERE customer_id = MOD(i, 100); " +
+                        "      UPDATE LOAD_TEST_LOCK_TARGET SET counter = v_count " +
+                        "      WHERE id = MOD(i, 10) + 1; " +
+                        "      COMMIT; " +
+                        "    EXCEPTION " +
+                        "      WHEN OTHERS THEN " +
+                        "        ROLLBACK; " +
+                        "        NULL; " +
+                        "    END; " +
                         "  END LOOP; " +
-                        "  COMMIT; " +
                         "END;");
                 } catch (SQLException e) {
-                    // Procedure might already exist
+                    // Check for compilation errors
+                    if (e.getErrorCode() == 6550) {
+                        // PL/SQL compilation error - log once and skip procedure creation
+                        System.err.println("Warning: Could not compile LOAD_TEST_PROC: " + e.getMessage());
+                        Thread.sleep(60000); // Wait a minute before retrying
+                        return;
+                    }
                 }
-                
+
                 // Execute the procedure
                 try (CallableStatement cstmt = conn.prepareCall("BEGIN LOAD_TEST_PROC; END;")) {
                     cstmt.execute();
                 }
                 Thread.sleep(4000);
+            } catch (SQLException e) {
+                // ORA-00060: Deadlock, ORA-06550: compilation error
+                if (running.get() && e.getErrorCode() != 60 && e.getErrorCode() != 6550) {
+                    System.err.println("PL/SQL load error: " + e.getMessage());
+                }
+                // If procedure is invalid, wait a bit before retrying
+                if (e.getErrorCode() == 6550) {
+                    try {
+                        Thread.sleep(10000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("PL/SQL load error: " + e.getMessage());
@@ -1081,20 +1116,37 @@ public class OracleLoadGenerator {
     private void generateFlashbackQueries() {
         while (running.get()) {
             try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
-                // Query data as of 5 minutes ago
-                stmt.executeQuery(
-                    "SELECT order_id, customer_id, order_amount, status " +
-                    "FROM LOAD_TEST_ORDERS " +
-                    "AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '5' MINUTE) " +
-                    "WHERE customer_id = 500 " +
-                    "AND ROWNUM <= 100");
-                
-                // Query versions of a specific row
-                stmt.executeQuery(
-                    "SELECT versions_starttime, versions_endtime, order_amount, status " +
-                    "FROM LOAD_TEST_ORDERS " +
-                    "VERSIONS BETWEEN TIMESTAMP MINVALUE AND MAXVALUE " +
-                    "WHERE order_id = 50000");
+                try {
+                    // Query data as of 1 minute ago (reduced from 5 to avoid table definition issues)
+                    stmt.executeQuery(
+                        "SELECT order_id, customer_id, order_amount, status " +
+                        "FROM LOAD_TEST_ORDERS " +
+                        "AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '1' MINUTE) " +
+                        "WHERE customer_id = 500 " +
+                        "AND ROWNUM <= 100");
+                } catch (SQLException e) {
+                    // ORA-01466: table definition changed, ORA-08181: snapshot too old
+                    if (e.getErrorCode() != 1466 && e.getErrorCode() != 8181) {
+                        throw e;
+                    }
+                    // Silently skip if table is too new or definition changed
+                }
+
+                try {
+                    // Query versions of a specific row - limited time window
+                    stmt.executeQuery(
+                        "SELECT versions_starttime, versions_endtime, order_amount, status " +
+                        "FROM LOAD_TEST_ORDERS " +
+                        "VERSIONS BETWEEN TIMESTAMP (SYSTIMESTAMP - INTERVAL '5' MINUTE) AND SYSTIMESTAMP " +
+                        "WHERE order_id = 50000");
+                } catch (SQLException e) {
+                    // ORA-01466: table definition changed, ORA-08181: snapshot too old
+                    if (e.getErrorCode() != 1466 && e.getErrorCode() != 8181) {
+                        throw e;
+                    }
+                    // Silently skip if table is too new or definition changed
+                }
+
                 Thread.sleep(6000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1457,12 +1509,85 @@ public class OracleLoadGenerator {
         }
     }
     
-    private void continuousTableCleanup() {
-        System.out.println("Starting continuous table cleanup (runs every 10 seconds)...");
+    private void periodicStatusReport() {
+        System.out.println("[DEBUG] Status reporter thread started");
+        System.out.flush();
 
         while (running.get()) {
             try {
+                System.out.println("[DEBUG] Status reporter sleeping for 30 seconds...");
+                System.out.flush();
+                Thread.sleep(30000); // Report every 30 seconds
+
+                System.out.println("[DEBUG] Status reporter woke up, querying database...");
+                System.out.flush();
+
+                try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                    // Get current row count
+                    ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM LOAD_TEST_ORDERS");
+                    int rowCount = 0;
+                    if (rs.next()) {
+                        rowCount = rs.getInt(1);
+                    }
+                    rs.close();
+
+                    // Try to get session info, but don't fail if we can't
+                    int activeSessions = -1;
+                    int blockedSessions = -1;
+
+                    try {
+                        rs = stmt.executeQuery(
+                            "SELECT COUNT(*) FROM v$session WHERE username IS NOT NULL AND status = 'ACTIVE'");
+                        if (rs.next()) {
+                            activeSessions = rs.getInt(1);
+                        }
+                        rs.close();
+
+                        rs = stmt.executeQuery(
+                            "SELECT COUNT(*) FROM v$session WHERE blocking_session IS NOT NULL");
+                        if (rs.next()) {
+                            blockedSessions = rs.getInt(1);
+                        }
+                        rs.close();
+                    } catch (SQLException se) {
+                        // User might not have access to v$session
+                    }
+
+                    if (activeSessions >= 0 && blockedSessions >= 0) {
+                        System.out.println(String.format(
+                            "[STATUS] Rows: %,d | Active Sessions: %d | Blocked Sessions: %d",
+                            rowCount, activeSessions, blockedSessions));
+                    } else {
+                        System.out.println(String.format("[STATUS] Rows in LOAD_TEST_ORDERS: %,d", rowCount));
+                    }
+                    System.out.flush(); // Force output
+
+                } catch (SQLException e) {
+                    System.err.println("Status report error: " + e.getMessage());
+                }
+
+            } catch (InterruptedException e) {
+                if (running.get()) {
+                    System.err.println("Status reporter interrupted: " + e.getMessage());
+                }
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void continuousTableCleanup() {
+        System.out.println("[DEBUG] Cleanup thread started");
+        System.out.flush();
+
+        while (running.get()) {
+            try {
+                System.out.println("[DEBUG] Cleanup sleeping for 10 seconds...");
+                System.out.flush();
                 Thread.sleep(10000); // Run every 10 seconds
+
+                System.out.println("[DEBUG] Cleanup woke up, checking for old rows...");
+                System.out.flush();
 
                 try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
                     conn.setAutoCommit(false);
@@ -1483,6 +1608,7 @@ public class OracleLoadGenerator {
 
                     if (deletedRows > 0) {
                         System.out.println("Cleanup: Deleted " + deletedRows + " old rows from LOAD_TEST_ORDERS");
+                        System.out.flush();
                     }
 
                 } catch (SQLException e) {
