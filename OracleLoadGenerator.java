@@ -268,21 +268,18 @@ public class OracleLoadGenerator {
         executorService.submit(this::generateGlobalTempTableOps);
         executorService.submit(this::generateTableFragmentation);
         executorService.submit(this::generateAuditTrailLoad);
-        
+
         executorService.submit(this::scheduledMetricsGenerator);
-        
+        executorService.submit(this::continuousTableCleanup);
+
         System.out.println("All load generators started successfully!");
     }
     
     private void scheduledMetricsGenerator() {
-        System.out.println("Starting scheduled metrics generator (runs every 5 seconds)...");
-        
         while (running.get()) {
             try {
                 Thread.sleep(5000);
-                
-                System.out.println("\n=== Scheduled Metrics Burst ===");
-                
+
                 // Existing metrics
                 executorService.submit(this::generateTablespacePressure);
                 executorService.submit(this::generateTempSpaceUsage);
@@ -304,9 +301,7 @@ public class OracleLoadGenerator {
                 executorService.submit(this::generateControlFileWaits);
                 executorService.submit(this::generateLibraryCachePinWaits);
                 executorService.submit(this::generateRowCacheLockWaits);
-                
-                System.out.println("=== Metrics burst triggered ===\n");
-                
+
             } catch (InterruptedException e) {
                 if (running.get()) {
                     System.err.println("Scheduled generator interrupted: " + e.getMessage());
@@ -328,7 +323,6 @@ public class OracleLoadGenerator {
                 "RPAD('Tablespace pressure test', 3500, 'X') " +
                 "FROM dual CONNECT BY LEVEL <= 5000");
             conn.commit();
-            System.out.println("  [Scheduled] Generated tablespace pressure");
         } catch (SQLException e) {
             System.err.println("Tablespace pressure error: " + e.getMessage());
         }
@@ -343,7 +337,6 @@ public class OracleLoadGenerator {
                 "FROM LOAD_TEST_ORDERS o1, LOAD_TEST_ORDERS o2 " +
                 "WHERE o1.region = o2.region " +
                 "ORDER BY o1.order_amount + o2.order_amount DESC");
-            System.out.println("  [Scheduled] Generated temp space usage");
         } catch (SQLException e) {
             System.err.println("Temp space error: " + e.getMessage());
         }
@@ -359,7 +352,6 @@ public class OracleLoadGenerator {
                 "WHERE MOD(order_id, 100) = 50");
             Thread.sleep(2000);
             conn.rollback();
-            System.out.println("  [Scheduled] Generated undo segment activity");
         } catch (Exception e) {
             System.err.println("Undo segment error: " + e.getMessage());
         }
@@ -371,7 +363,6 @@ public class OracleLoadGenerator {
                 String dynamicSQL = "SELECT COUNT(*) FROM LOAD_TEST_ORDERS WHERE customer_id = 500 AND region = 'Region5'";
                 stmt.executeQuery(dynamicSQL);
             }
-            System.out.println("  [Scheduled] Generated library cache contention (50 identical SQLs)");
         } catch (SQLException e) {
             System.err.println("Library cache error: " + e.getMessage());
         }
@@ -383,7 +374,6 @@ public class OracleLoadGenerator {
                 stmt.executeQuery(
                     "SELECT table_name FROM user_tables WHERE table_name LIKE 'LOAD_TEST%'");
             }
-            System.out.println("  [Scheduled] Generated row cache (dictionary cache) contention");
         } catch (SQLException e) {
             System.err.println("Row cache error: " + e.getMessage());
         }
@@ -405,8 +395,6 @@ public class OracleLoadGenerator {
                 "UPDATE LOAD_TEST_ORDERS SET status = 'PROCESSING' " +
                 "WHERE status = 'PENDING' AND ROWNUM <= 3000");
             conn.commit();
-            
-            System.out.println("  [Scheduled] Generated checkpoint activity");
         } catch (SQLException e) {
             System.err.println("Checkpoint error: " + e.getMessage());
         }
@@ -425,7 +413,6 @@ public class OracleLoadGenerator {
                     "FROM dual CONNECT BY LEVEL <= 2000");
                 conn.commit();
             }
-            System.out.println("  [Scheduled] Generated archive log activity (heavy redo)");
         } catch (SQLException e) {
             System.err.println("Archive log error: " + e.getMessage());
         }
@@ -441,7 +428,6 @@ public class OracleLoadGenerator {
                     pstmt.executeQuery();
                 }
             }
-            System.out.println("  [Scheduled] Generated parse activity (100 hard parses)");
         } catch (SQLException e) {
             System.err.println("Parse activity error: " + e.getMessage());
         }
@@ -467,7 +453,6 @@ public class OracleLoadGenerator {
                     }
                 }
             }
-            System.out.println("  [Scheduled] Generated SQL*Net activity (1000 round-trips)");
         } catch (SQLException e) {
             System.err.println("SQL*Net activity error: " + e.getMessage());
         }
@@ -495,8 +480,6 @@ public class OracleLoadGenerator {
                 pstmt.executeBatch();
                 conn.commit();
             }
-            
-            System.out.println("  [Scheduled] Generated index contention (1000 inserts on PK)");
         } catch (SQLException e) {
             System.err.println("Index contention error: " + e.getMessage());
         }
@@ -536,8 +519,7 @@ public class OracleLoadGenerator {
                 while (rs.next() && running.get()) {
                     // Process results
                 }
-                System.out.println("Executed CPU-intensive query");
-                Thread.sleep(500); // Reduced from 1000ms to 500ms for higher frequency
+                Thread.sleep(500);
             } catch (Exception e) {
                 if (running.get()) {
                     System.err.println("CPU query error: " + e.getMessage());
@@ -584,7 +566,6 @@ public class OracleLoadGenerator {
                         }
                     }
                 }
-                System.out.println("Executed I/O-intensive operation");
                 Thread.sleep(1500);
             } catch (Exception e) {
                 if (running.get()) {
@@ -600,9 +581,7 @@ public class OracleLoadGenerator {
             
             blockerConnection = getConnection();
             blockerConnection.setAutoCommit(false);
-            
-            System.out.println("Starting blocker session (will hold locks)");
-            
+
             try (Statement stmt = blockerConnection.createStatement()) {
                 stmt.executeUpdate(
                     "UPDATE LOAD_TEST_LOCK_TARGET " +
@@ -610,18 +589,14 @@ public class OracleLoadGenerator {
                     "data = 'LOCKED' " +
                     "WHERE id BETWEEN 1 AND 50");
             }
-            
-            System.out.println("Blocker session acquired locks on rows 1-50");
-            
+
             for (int i = 0; i < 5; i++) {
-                final int sessionNum = i;
                 Connection blockedConn = getConnection();
                 blockedConn.setAutoCommit(false);
                 blockedConnections.add(blockedConn);
-                
+
                 executorService.submit(() -> {
                     try {
-                        System.out.println("Blocked session " + sessionNum + " attempting to acquire locks...");
                         try (Statement stmt = blockedConn.createStatement()) {
                             stmt.setQueryTimeout(30);
                             stmt.executeUpdate(
@@ -629,18 +604,16 @@ public class OracleLoadGenerator {
                                 "SET counter = 300, data = 'BLOCKED_SESSION' " +
                                 "WHERE id BETWEEN 25 AND 75");
                             blockedConn.commit();
-                            System.out.println("Blocked session " + sessionNum + " acquired lock");
                         }
                     } catch (SQLException e) {
-                        System.out.println("Blocked session " + sessionNum + " wait event: " + e.getMessage());
+                        // Lock contention expected
                     }
                 });
             }
-            
+
             Thread.sleep(20000);
             blockerConnection.rollback();
-            System.out.println("Blocker session released locks");
-            
+
         } catch (Exception e) {
             if (running.get()) {
                 System.err.println("Lock contention error: " + e.getMessage());
@@ -755,7 +728,6 @@ public class OracleLoadGenerator {
                 while (rs.next() && running.get()) {
                     // Process results
                 }
-                System.out.println("Executed direct path read query");
                 Thread.sleep(4000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -808,8 +780,6 @@ public class OracleLoadGenerator {
                 Thread.sleep(5000);
                 conn.commit();
             }
-            
-            System.out.println("  [Scheduled] Generated enqueue contention burst");
         } catch (Exception e) {
             System.err.println("Enqueue contention burst error: " + e.getMessage());
         }
@@ -832,8 +802,6 @@ public class OracleLoadGenerator {
                 Thread.sleep(8000);
                 conn.rollback();
             }
-            
-            System.out.println("  [Scheduled] Generated row-level locking contention");
         } catch (Exception e) {
             System.err.println("Row-level locking error: " + e.getMessage());
         }
@@ -852,8 +820,6 @@ public class OracleLoadGenerator {
                     "WHERE id = " + hotRowId);
             }
             conn.commit();
-            
-            System.out.println("  [Scheduled] Generated buffer cache contention");
         } catch (SQLException e) {
             System.err.println("Buffer cache contention error: " + e.getMessage());
         }
@@ -878,8 +844,6 @@ public class OracleLoadGenerator {
                 pstmt.executeBatch();
                 conn.commit();
             }
-            
-            System.out.println("  [Scheduled] Generated sequence contention (500 rapid inserts)");
         } catch (SQLException e) {
             System.err.println("Sequence contention error: " + e.getMessage());
         }
@@ -899,11 +863,9 @@ public class OracleLoadGenerator {
                 "RPAD('DB file sync test', 2500, 'X') " +
                 "FROM dual CONNECT BY LEVEL <= 5000");
             conn.commit();
-            
+
             // Force checkpoint
             stmt.execute("ALTER SYSTEM CHECKPOINT");
-            
-            System.out.println("  [Scheduled] Generated DB file sync waits");
         } catch (SQLException e) {
             System.err.println("DB file sync error: " + e.getMessage());
         }
@@ -918,8 +880,6 @@ public class OracleLoadGenerator {
                 stmt.executeQuery(
                     "SELECT status FROM v$instance");
             }
-            
-            System.out.println("  [Scheduled] Generated control file access waits");
         } catch (SQLException e) {
             System.err.println("Control file waits error: " + e.getMessage());
         }
@@ -944,8 +904,6 @@ public class OracleLoadGenerator {
                     // Ignore errors for temp procedures
                 }
             }
-            
-            System.out.println("  [Scheduled] Generated library cache pin waits (15 compilations)");
         } catch (SQLException e) {
             System.err.println("Library cache pin error: " + e.getMessage());
         }
@@ -962,8 +920,6 @@ public class OracleLoadGenerator {
                 stmt.executeQuery(
                     "SELECT index_name, uniqueness FROM user_indexes WHERE table_name LIKE 'LOAD_TEST%'");
             }
-            
-            System.out.println("  [Scheduled] Generated row cache lock waits (150 metadata queries)");
         } catch (SQLException e) {
             System.err.println("Row cache lock error: " + e.getMessage());
         }
@@ -988,15 +944,13 @@ public class OracleLoadGenerator {
                             stmt2.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 700 WHERE id = 1");
                             conn2.commit();
                         } catch (Exception e) {
-                            try { conn2.rollback(); } catch (SQLException ex) {}
+                            try { conn2.rollback(); } catch (SQLException sqle) {}
                         }
                     });
                     
                     stmt1.executeUpdate("UPDATE LOAD_TEST_LOCK_TARGET SET counter = 800 WHERE id = 2");
                     conn1.commit();
                 }
-                
-                System.out.println("Generated deadlock scenario");
                 Thread.sleep(5000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1020,8 +974,6 @@ public class OracleLoadGenerator {
                     "GROUP BY customer_id, product_id " +
                     "HAVING COUNT(*) > 1 " +
                     "ORDER BY total DESC");
-                
-                System.out.println("Executed parallel query load");
                 Thread.sleep(3000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1053,8 +1005,6 @@ public class OracleLoadGenerator {
                         rs.getString(1);
                     }
                 }
-                
-                System.out.println("Generated LOB operations");
                 Thread.sleep(2000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1089,8 +1039,6 @@ public class OracleLoadGenerator {
                 try (CallableStatement cstmt = conn.prepareCall("BEGIN LOAD_TEST_PROC; END;")) {
                     cstmt.execute();
                 }
-                
-                System.out.println("Executed PL/SQL load");
                 Thread.sleep(4000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1121,8 +1069,6 @@ public class OracleLoadGenerator {
                         }
                     }
                 }
-                
-                System.out.println("Generated bind variable load (50 executions)");
                 Thread.sleep(2000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1149,8 +1095,6 @@ public class OracleLoadGenerator {
                     "FROM LOAD_TEST_ORDERS " +
                     "VERSIONS BETWEEN TIMESTAMP MINVALUE AND MAXVALUE " +
                     "WHERE order_id = 50000");
-                
-                System.out.println("Generated flashback queries");
                 Thread.sleep(6000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1173,10 +1117,8 @@ public class OracleLoadGenerator {
                     "SYSDATE, 150.00, 'PENDING', 'Region0', 'Rep1', " +
                     "RPAD('Direct path write test', 1000, 'D') " +
                     "FROM dual CONNECT BY LEVEL <= 1000");
-                
+
                 conn.commit();
-                
-                System.out.println("Generated direct path writes");
                 Thread.sleep(5000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1206,8 +1148,6 @@ public class OracleLoadGenerator {
                     "WHERE order_date BETWEEN SYSDATE - 60 AND SYSDATE - 30 " +
                     "AND status = 'COMPLETED' " +
                     "ORDER BY order_date");
-                
-                System.out.println("Generated partition pruning tests");
                 Thread.sleep(4000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1242,8 +1182,6 @@ public class OracleLoadGenerator {
                     "SELECT * FROM LOAD_TEST_MV " +
                     "WHERE order_count > 10 " +
                     "ORDER BY total_amount DESC");
-                
-                System.out.println("Generated materialized view refresh");
                 Thread.sleep(10000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1268,8 +1206,6 @@ public class OracleLoadGenerator {
                     // Intentionally not closing to simulate leak
                     // They will be closed when connection closes
                 }
-                
-                System.out.println("Generated cursor leak scenario (50 open cursors)");
                 Thread.sleep(5000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1300,8 +1236,6 @@ public class OracleLoadGenerator {
                 // Rollback the transaction
                 Thread.sleep(2000);
                 conn.rollback();
-                
-                System.out.println("Generated transaction rollback pattern");
                 Thread.sleep(3000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1324,8 +1258,6 @@ public class OracleLoadGenerator {
                     "WHERE o1.status = o2.status " +
                     "AND ROWNUM <= 50000 " +
                     "ORDER BY combined DESC, o1.customer_id, o2.product_id");
-                
-                System.out.println("Generated sort spill operations");
                 Thread.sleep(5000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1347,8 +1279,6 @@ public class OracleLoadGenerator {
                     "JOIN LOAD_TEST_LOCK_TARGET l ON MOD(o.customer_id, 100) = l.id " +
                     "WHERE o.status = 'PENDING' " +
                     "AND o.order_amount > 100.00");
-                
-                System.out.println("Generated hash join operations");
                 Thread.sleep(3000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1370,8 +1300,6 @@ public class OracleLoadGenerator {
                     "WHERE o.customer_id = l.id " +
                     "AND o.order_id BETWEEN 1000 AND 2000 " +
                     "AND l.id <= 50");
-                
-                System.out.println("Generated nested loop join operations");
                 Thread.sleep(2500);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1409,8 +1337,6 @@ public class OracleLoadGenerator {
                     "WHERE status IN ('COMPLETED', 'CANCELLED') " +
                     "GROUP BY status, region " +
                     "HAVING COUNT(*) > 10");
-                
-                System.out.println("Generated bitmap index operations");
                 Thread.sleep(4000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1454,10 +1380,8 @@ public class OracleLoadGenerator {
                     "FROM LOAD_TEST_GTT " +
                     "WHERE total_amount > 1000.00 " +
                     "ORDER BY total_amount DESC");
-                
+
                 conn.commit();
-                
-                System.out.println("Generated global temp table operations");
                 Thread.sleep(3000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1493,8 +1417,6 @@ public class OracleLoadGenerator {
                     "SELECT /*+ FULL(o) */ COUNT(*), AVG(order_amount) " +
                     "FROM LOAD_TEST_ORDERS o " +
                     "WHERE status <> 'ARCHIVED'");
-                
-                System.out.println("Generated table fragmentation load");
                 Thread.sleep(5000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1526,8 +1448,6 @@ public class OracleLoadGenerator {
                 } catch (SQLException e) {
                     // Unified audit might not be enabled
                 }
-                
-                System.out.println("Generated audit trail load");
                 Thread.sleep(8000);
             } catch (Exception e) {
                 if (running.get()) {
@@ -1537,6 +1457,48 @@ public class OracleLoadGenerator {
         }
     }
     
+    private void continuousTableCleanup() {
+        System.out.println("Starting continuous table cleanup (runs every 10 seconds)...");
+
+        while (running.get()) {
+            try {
+                Thread.sleep(10000); // Run every 10 seconds
+
+                try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                    conn.setAutoCommit(false);
+
+                    // Keep only the most recent 200,000 rows to maintain steady state
+                    // Delete older rows to prevent unbounded growth
+                    int deletedRows = stmt.executeUpdate(
+                        "DELETE FROM LOAD_TEST_ORDERS " +
+                        "WHERE order_id < (" +
+                        "  SELECT MIN(order_id) FROM (" +
+                        "    SELECT order_id FROM LOAD_TEST_ORDERS " +
+                        "    ORDER BY order_id DESC " +
+                        "    FETCH FIRST 200000 ROWS ONLY" +
+                        "  )" +
+                        ")");
+
+                    conn.commit();
+
+                    if (deletedRows > 0) {
+                        System.out.println("Cleanup: Deleted " + deletedRows + " old rows from LOAD_TEST_ORDERS");
+                    }
+
+                } catch (SQLException e) {
+                    System.err.println("Table cleanup error: " + e.getMessage());
+                }
+
+            } catch (InterruptedException e) {
+                if (running.get()) {
+                    System.err.println("Cleanup task interrupted: " + e.getMessage());
+                }
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
     private void stop() {
         running.set(false);
         executorService.shutdownNow();
