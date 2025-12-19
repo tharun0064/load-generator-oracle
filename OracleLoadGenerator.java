@@ -116,32 +116,53 @@ public class OracleLoadGenerator {
     
     private void setupTestData() throws SQLException {
         System.out.println("Setting up test tables and data...");
-        
+
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             conn.setAutoCommit(false);
-            
-            // Drop existing tables
-            try {
-                stmt.execute("BEGIN " +
-                    "FOR t IN (SELECT table_name FROM user_tables WHERE table_name LIKE 'LOAD_TEST_%') LOOP " +
-                    "EXECUTE IMMEDIATE 'DROP TABLE ' || t.table_name || ' PURGE'; " +
-                    "END LOOP; " +
-                    "END;");
-            } catch (SQLException e) {
-                // Ignore if no tables exist
+
+            // Drop existing tables individually
+            System.out.println("Dropping existing tables if they exist...");
+            String[] tablesToDrop = {"LOAD_TEST_ORDERS", "LOAD_TEST_LOCK_TARGET", "LOAD_TEST_MV", "LOAD_TEST_GTT"};
+            for (String tableName : tablesToDrop) {
+                try {
+                    stmt.execute("DROP TABLE " + tableName + " CASCADE CONSTRAINTS PURGE");
+                    System.out.println("Dropped table: " + tableName);
+                } catch (SQLException e) {
+                    // Ignore if table doesn't exist (ORA-00942)
+                    if (e.getErrorCode() != 942) {
+                        System.err.println("Warning dropping " + tableName + ": " + e.getMessage());
+                    }
+                }
             }
-            
-            // Drop existing sequences
-            try {
-                stmt.execute("BEGIN " +
-                    "FOR s IN (SELECT sequence_name FROM user_sequences WHERE sequence_name IN ('LOAD_TEST_ORDER_SEQ', 'LOAD_TEST_LOCK_SEQ')) LOOP " +
-                    "EXECUTE IMMEDIATE 'DROP SEQUENCE ' || s.sequence_name; " +
-                    "END LOOP; " +
-                    "END;");
-            } catch (SQLException e) {
-                // Ignore if no sequences exist
+
+            // Drop existing sequences individually
+            String[] sequencesToDrop = {"LOAD_TEST_ORDER_SEQ", "LOAD_TEST_LOCK_SEQ"};
+            for (String seqName : sequencesToDrop) {
+                try {
+                    stmt.execute("DROP SEQUENCE " + seqName);
+                    System.out.println("Dropped sequence: " + seqName);
+                } catch (SQLException e) {
+                    // Ignore if sequence doesn't exist (ORA-02289)
+                    if (e.getErrorCode() != 2289) {
+                        System.err.println("Warning dropping " + seqName + ": " + e.getMessage());
+                    }
+                }
             }
-            
+
+            // Drop bitmap indexes
+            String[] indexesToDrop = {"LOAD_TEST_STATUS_BITMAP", "LOAD_TEST_REGION_BITMAP"};
+            for (String idxName : indexesToDrop) {
+                try {
+                    stmt.execute("DROP INDEX " + idxName);
+                    System.out.println("Dropped index: " + idxName);
+                } catch (SQLException e) {
+                    // Ignore if index doesn't exist (ORA-01418)
+                    if (e.getErrorCode() != 1418) {
+                        System.err.println("Warning dropping " + idxName + ": " + e.getMessage());
+                    }
+                }
+            }
+
             System.out.println("Creating tables...");
             
             stmt.execute("CREATE TABLE LOAD_TEST_ORDERS (" +
