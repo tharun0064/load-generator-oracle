@@ -52,7 +52,7 @@ public class OracleLoadGenerator {
     private final List<Connection> blockedConnections = new ArrayList<>();
     
     public OracleLoadGenerator() {
-        this.executorService = Executors.newFixedThreadPool(50);
+        this.executorService = Executors.newFixedThreadPool(70);
     }
     
     private static Map<String, String> loadEnvFile(String filePath) {
