@@ -270,8 +270,22 @@ public class OracleLoadGenerator {
         executorService.submit(this::generateAuditTrailLoad);
 
         executorService.submit(this::scheduledMetricsGenerator);
-        executorService.submit(this::continuousTableCleanup);
-        executorService.submit(this::periodicStatusReport);
+
+        System.out.println("[MAIN] Submitting cleanup thread...");
+        System.out.flush();
+        executorService.submit(() -> {
+            System.out.println("[CLEANUP] Thread started!");
+            System.out.flush();
+            continuousTableCleanup();
+        });
+
+        System.out.println("[MAIN] Submitting status reporter thread...");
+        System.out.flush();
+        executorService.submit(() -> {
+            System.out.println("[STATUS] Thread started!");
+            System.out.flush();
+            periodicStatusReport();
+        });
 
         System.out.println("All load generators started successfully!");
         System.out.println("Status reports will appear every 30 seconds...");
